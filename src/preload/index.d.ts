@@ -1,8 +1,12 @@
-import { ElectronAPI } from '@electron-toolkit/preload'
-
 declare global {
   interface Window {
-    electron: ElectronAPI
-    api: unknown
+    api: {
+      onServerStatus: (callback: (status: boolean) => void) => void
+      onDeviceDiscovered: (
+        callback: (device: { alias: string; ip: string; deviceType: string }) => void
+      ) => void
+    }
   }
 }
+
+export {}
