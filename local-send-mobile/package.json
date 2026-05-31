@@ -10,8 +10,11 @@
   },
   "dependencies": {
     "@react-native-community/netinfo": "11.4.1",
-    "expo": "~54.0.33",
+    "expo": "54.0.35",
+    "expo-document-picker": "~14.0.8",
     "expo-status-bar": "~3.0.9",
+    "metro": "^0.83.1",
+    "metro-runtime": "^0.84.4",
     "react": "19.1.0",
     "react-native": "0.81.5"
   },
