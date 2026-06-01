@@ -6,6 +6,7 @@ import dgram from 'node:dgram'
 import net from 'node:net'
 import fs from 'node:fs'
 import * as http from 'node:http'
+import FormData from 'form-data'
 
 let mainWindow: BrowserWindow | null = null
 let currentFileMeta = { name: 'archivo.bin', size: 0 }
@@ -329,7 +330,7 @@ function initHTTPServer(): void {
           }
         });
       } 
-      // B. Procesar el Stream de Bytes reales y forzar escritura en caliente
+      // B. Procesar el Stream de Bytes reales limpios (Extrayendo el Boundary de LocalSend)
       else {
         const downloadFolder = app.getPath('downloads');
         let filename = currentFileMeta.name || 'archivo_recibido.bin';
@@ -345,11 +346,13 @@ function initHTTPServer(): void {
 
         console.log(`[HTTP Streaming] Escribiendo datos físicos en: ${basename(targetPath)}`);
         const writeStream = fs.createWriteStream(targetPath);
+        
         let receivedBytes = 0;
+        let chunks: Buffer[] = [];
 
         req.on('data', (chunk) => {
           receivedBytes += chunk.length;
-          writeStream.write(chunk); 
+          chunks.push(chunk);
 
           const totalSize = currentFileMeta.size || 1024 * 1024;
           const percentage = Math.min(100, Math.round((receivedBytes / totalSize) * 100));
@@ -363,6 +366,38 @@ function initHTTPServer(): void {
         });
 
         req.on('end', () => {
+          // Juntamos todos los pedazos recibidos en un solo buffer crudo
+          const fullBuffer = Buffer.concat(chunks);
+
+          // LocalSend separa las cabeceras HTTP de los bytes reales usando "\r\n\r\n"
+          const headerSeparator = Buffer.from('\r\n\r\n');
+          const firstSeparatorIndex = fullBuffer.indexOf(headerSeparator);
+
+          if (firstSeparatorIndex !== -1 && contentType.includes('multipart')) {
+            // Buscamos dónde terminan las cabeceras del formulario
+            const fileDataStart = firstSeparatorIndex + headerSeparator.length;
+            
+            // Buscamos el cierre del multipart boundary al final del archivo
+            const boundaryStr = contentType.split('boundary=')[1];
+            let fileDataEnd = fullBuffer.length;
+            
+            if (boundaryStr) {
+              const boundaryBuffer = Buffer.from('--' + boundaryStr);
+              const lastBoundaryIndex = fullBuffer.lastIndexOf(boundaryBuffer);
+              if (lastBoundaryIndex > fileDataStart) {
+                // Le restamos los dos guiones y el salto de línea anterior
+                fileDataEnd = lastBoundaryIndex - 2; 
+              }
+            }
+
+            // Recortamos el buffer para quedarnos SÓLO con los bytes puros de la imagen
+            const cleanFileData = fullBuffer.subarray(fileDataStart, fileDataEnd);
+            writeStream.write(cleanFileData);
+          } else {
+            // Si por algún motivo no era multipart, escribimos el buffer completo
+            writeStream.write(fullBuffer);
+          }
+
           writeStream.end();
         });
 
