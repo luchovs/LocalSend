@@ -6,6 +6,7 @@ import {
 import NetInfo from '@react-native-community/netinfo'
 import * as DocumentPicker from 'expo-document-picker'
 import { File, Paths } from 'expo-file-system'
+import * as FileSystemLegacy from 'expo-file-system/legacy'
 import * as Sharing from 'expo-sharing'
 
 interface DiscoveredDevice {
@@ -221,17 +222,28 @@ const downloadFile = async () => {
 
     setReceiveProgress(80)
 
-    // Guardar en caché con la API nueva
-    const file = new File(Paths.cache, incomingFile.name)
-    await file.write(base64, { encoding: 'base64' } as any)
+    // Pedir permiso para escribir en Descargas
+    const permissions = await FileSystemLegacy.StorageAccessFramework.requestDirectoryPermissionsAsync()
 
-    setReceiveProgress(100)
+    if (permissions.granted) {
+      const mimeType = incomingFile.name.match(/\.(jpg|jpeg)$/i) ? 'image/jpeg'
+        : incomingFile.name.endsWith('.png') ? 'image/png'
+        : incomingFile.name.endsWith('.pdf') ? 'application/pdf'
+        : incomingFile.name.endsWith('.mp4') ? 'video/mp4'
+        : 'application/octet-stream'
 
-    // Abrir el diálogo nativo de guardar/compartir
-    await Sharing.shareAsync(file.uri, {
-      dialogTitle: `Guardar ${incomingFile.name}`,
-      UTI: 'public.item'
-    })
+      const newUri = await await FileSystemLegacy.StorageAccessFramework.createFileAsync(
+        permissions.directoryUri,
+        incomingFile.name,
+        mimeType
+      )
+      await FileSystemLegacy.writeAsStringAsync(newUri, base64, {
+        encoding: 'base64' as any
+      })
+      Alert.alert('✅ Guardado', `"${incomingFile.name}" guardado correctamente.`)
+    } else {
+      Alert.alert('Permiso denegado', 'No se pudo guardar el archivo.')
+    }
 
     setIncomingFile(null)
   } catch (err) {
