@@ -55,28 +55,26 @@ export default function App() {
     setIsDragging(false)
   }
 
-const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault()
-    setIsDragging(false)
-    
-    if (!selectedDevice) {
-      alert('¡Primero seleccioná un dispositivo de la lista de abajo haciéndole click!')
-      return
-    }
-
-    const files = e.dataTransfer.files
-    if (files.length > 0) {
-      const file = files[0] as any
-      console.log(`Enviando ${file.name} a la IP: ${selectedDevice.ip}`)
-      
-      // 🌟 Llamamos a la API unificada del preload de forma limpia
-      if (electronAPI?.sendFileToDevice) {
-        electronAPI.sendFileToDevice(file.path, file.name, selectedDevice.ip)
-      } else {
-        alert('El puente de envío no está inicializado en el preload.')
-      }
-    }
+const handleDrop = async (e: React.DragEvent) => {
+  e.preventDefault()
+  setIsDragging(false)
+  
+  if (!selectedDevice) {
+    alert('¡Primero seleccioná un dispositivo de la lista de abajo!')
+    return
   }
+
+  const files = e.dataTransfer.files
+  if (files.length > 0) {
+    const file = files[0]
+    
+    // Leer el archivo como ArrayBuffer en el renderer (donde tenemos acceso al File object)
+    const arrayBuffer = await file.arrayBuffer()
+    const uint8Array = new Uint8Array(arrayBuffer)
+    
+    electronAPI.sendFileToDevice(Array.from(uint8Array), file.name, selectedDevice.ip)
+  }
+}
 
   return (
     <div 

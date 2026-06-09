@@ -6,8 +6,8 @@ const api = {
   sendPing: () => ipcRenderer.send('ping'),
   
   // 🌟 AGREGÁ ESTA LÍNEA MÁGICA:
-  sendFileToDevice: (filePath: string, fileName: string, targetIp: string) => 
-    ipcRenderer.send('send-file-to-device', { filePath, fileName, targetIp }),
+  sendFileToDevice: (fileBytes: number[], fileName: string, targetIp: string) => 
+    ipcRenderer.send('send-file-to-device', { fileBytes, fileName, targetIp }),
   // Escuchadores del ciclo de transferencia y red
   onServerStatus: (callback: (status: boolean) => void) => {
     ipcRenderer.on('server-status', (_event, status) => callback(status))
