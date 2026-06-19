@@ -14,7 +14,6 @@ interface ProgressData {
 }
 
 const electronAPI = (window as any).api
-
 const DEFAULT_ALIAS = 'Mi PC'
 
 export default function App() {
@@ -22,66 +21,73 @@ export default function App() {
   const [selectedDevice, setSelectedDevice] = useState<MobileDevice | null>(null)
   const [isDragging, setIsDragging] = useState(false)
   const [progress, setProgress] = useState<ProgressData | null>(null)
-  const [alias, setAlias] = useState<string>(() => localStorage.getItem('device-alias') || DEFAULT_ALIAS)
+  const [alias, setAlias] = useState<string>(DEFAULT_ALIAS)
   const [editingAlias, setEditingAlias] = useState(false)
-  const [aliasInput, setAliasInput] = useState(alias)
+  const [aliasInput, setAliasInput] = useState(DEFAULT_ALIAS)
+  const [networkError, setNetworkError] = useState<{ message: string; recoverable: boolean } | null>(null)
 
   useEffect(() => {
-    // Sincronizar el alias con el main process cada vez que cambia
-    electronAPI?.setAlias(alias)
-  }, [alias])
+    if (!electronAPI) return
 
-  useEffect(() => {
-    if (electronAPI) {
-      electronAPI.onDeviceDiscovered((device: MobileDevice) => {
-        setDevices((prev) => {
-          if (prev.some((d) => d.ip === device.ip)) return prev
-          return [...prev, device]
-        })
+    // Cargar alias persistido desde el main al arrancar
+    electronAPI.onLoadAlias((savedAlias: string) => {
+      setAlias(savedAlias)
+      setAliasInput(savedAlias)
+    })
+
+    electronAPI.onDeviceDiscovered((device: MobileDevice) => {
+      setDevices((prev) => {
+        if (prev.some((d) => d.ip === device.ip)) return prev
+        return [...prev, device]
       })
-      electronAPI.onTransferProgress((data: ProgressData) => {
-        setProgress(data)
-      })
-      electronAPI.onTransferComplete(() => {
-        alert('¡Transferencia finalizada con éxito!')
-        setProgress(null)
-      })
-      electronAPI.onTransferError((errorMsg: string) => {
-        console.error(`Error en transferencia: ${errorMsg}`)
-        setProgress(null)
-      })
-    }
+    })
+
+    electronAPI.onTransferProgress((data: ProgressData) => {
+      setProgress(data)
+      setNetworkError(null) // limpiar error si retoma
+    })
+
+    electronAPI.onTransferComplete(() => {
+      setProgress(null)
+      setNetworkError(null)
+    })
+
+    electronAPI.onTransferError((errorMsg: string) => {
+      setProgress(null)
+      if (errorMsg === 'omitido') return
+
+      if (errorMsg.startsWith('recoverable:')) {
+        setNetworkError({ message: 'Se perdió la conexión. Podés reintentar el envío desde el celular.', recoverable: true })
+      } else if (errorMsg.startsWith('fatal:')) {
+        setNetworkError({ message: 'Error de transferencia. Verificá que ambos dispositivos estén en la misma red y volvé a intentarlo.', recoverable: false })
+      } else {
+        setNetworkError({ message: errorMsg, recoverable: false })
+      }
+    })
   }, [])
 
   const saveAlias = () => {
     const trimmed = aliasInput.trim() || DEFAULT_ALIAS
     setAlias(trimmed)
     setAliasInput(trimmed)
-    localStorage.setItem('device-alias', trimmed)
+    electronAPI?.setAlias(trimmed)
     setEditingAlias(false)
   }
 
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault()
-    setIsDragging(true)
-  }
-
+  const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); setIsDragging(true) }
   const handleDragLeave = () => setIsDragging(false)
 
-  const handleDrop = (e: React.DragEvent) => {
+  const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault()
     setIsDragging(false)
-    if (!selectedDevice) {
-      alert('¡Primero seleccioná un dispositivo de la lista!')
-      return
-    }
+    setNetworkError(null)
+    if (!selectedDevice) { alert('¡Primero seleccioná un dispositivo de la lista!'); return }
     const files = e.dataTransfer.files
     if (files.length > 0) {
       const file = files[0] as any
       if (electronAPI?.sendFileToDevice) {
-        const arrayBuffer = file.arrayBuffer().then((ab: ArrayBuffer) => {
-          electronAPI.sendFileToDevice(Array.from(new Uint8Array(ab)), file.name, selectedDevice.ip)
-        })
+        const ab = await file.arrayBuffer()
+        electronAPI.sendFileToDevice(Array.from(new Uint8Array(ab)), file.name, selectedDevice.ip)
       }
     }
   }
@@ -91,7 +97,6 @@ export default function App() {
       <div style={styles.header}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <h1 style={styles.title}>LocalSend Desktop</h1>
-          {/* Editor de nombre */}
           {editingAlias ? (
             <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
               <input
@@ -106,7 +111,7 @@ export default function App() {
               <button style={styles.aliasCancel} onClick={() => { setEditingAlias(false); setAliasInput(alias) }}>✕</button>
             </div>
           ) : (
-            <span style={styles.aliasDisplay} onClick={() => setEditingAlias(true)} title="Hacer clic para editar">
+            <span style={styles.aliasDisplay} onClick={() => setEditingAlias(true)} title="Clic para editar">
               ✏️ {alias}
             </span>
           )}
@@ -118,6 +123,21 @@ export default function App() {
 
       <hr style={styles.divider} />
 
+      {/* Error de red */}
+      {networkError && (
+        <div style={{ ...styles.errorBox, borderColor: networkError.recoverable ? '#FF9800' : '#F44336' }}>
+          <span style={{ fontSize: '18px' }}>{networkError.recoverable ? '⚠️' : '❌'}</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 'bold', color: networkError.recoverable ? '#FF9800' : '#F44336', marginBottom: '2px' }}>
+              {networkError.recoverable ? 'Conexión interrumpida' : 'Error de transferencia'}
+            </div>
+            <div style={{ color: '#a0a0b0', fontSize: '13px' }}>{networkError.message}</div>
+          </div>
+          <button style={styles.errorDismiss} onClick={() => setNetworkError(null)}>✕</button>
+        </div>
+      )}
+
+      {/* Drop zone */}
       <div
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
@@ -135,6 +155,7 @@ export default function App() {
         </p>
       </div>
 
+      {/* Progreso */}
       {progress && (
         <div style={styles.progressBox}>
           <div style={styles.progressHeader}>
@@ -175,9 +196,7 @@ export default function App() {
             </div>
           )
         })}
-        {devices.length === 0 && (
-          <p style={styles.emptyText}>Buscando dispositivos... Activá el radar desde el celular.</p>
-        )}
+        {devices.length === 0 && <p style={styles.emptyText}>Buscando dispositivos... Activá el radar desde el celular.</p>}
       </div>
     </div>
   )
@@ -209,5 +228,7 @@ const styles: Record<string, React.CSSProperties> = {
   aliasInput: { backgroundColor: '#2a2a32', border: '1px solid #4CAF50', borderRadius: '6px', color: '#fff', padding: '4px 8px', fontSize: '14px', outline: 'none' },
   aliasSave: { backgroundColor: '#4CAF50', border: 'none', borderRadius: '6px', color: '#fff', padding: '4px 10px', cursor: 'pointer', fontWeight: 'bold' },
   aliasCancel: { backgroundColor: '#3a3a45', border: 'none', borderRadius: '6px', color: '#fff', padding: '4px 10px', cursor: 'pointer' },
-  aliasDisplay: { color: '#a0a0b0', fontSize: '14px', cursor: 'pointer', padding: '4px 8px', borderRadius: '6px', border: '1px solid #3a3a45' }
+  aliasDisplay: { color: '#a0a0b0', fontSize: '14px', cursor: 'pointer', padding: '4px 8px', borderRadius: '6px', border: '1px solid #3a3a45' },
+  errorBox: { display: 'flex', alignItems: 'flex-start', gap: '12px', padding: '14px 16px', borderRadius: '10px', border: '1px solid', backgroundColor: '#1a1a20', marginBottom: '16px' },
+  errorDismiss: { background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: '16px', padding: '0 4px', flexShrink: 0 }
 }
