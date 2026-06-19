@@ -1,14 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
-// Estructura de API segura para que React hable con el proceso Main de Node
 const api = {
-  // Enviar acciones al Main
   sendPing: () => ipcRenderer.send('ping'),
-  
-  // 🌟 AGREGÁ ESTA LÍNEA MÁGICA:
-  sendFileToDevice: (fileBytes: number[], fileName: string, targetIp: string) => 
+
+  setAlias: (alias: string) => ipcRenderer.send('set-alias', alias),
+
+  sendFileToDevice: (fileBytes: number[], fileName: string, targetIp: string) =>
     ipcRenderer.send('send-file-to-device', { fileBytes, fileName, targetIp }),
-  // Escuchadores del ciclo de transferencia y red
+
   onServerStatus: (callback: (status: boolean) => void) => {
     ipcRenderer.on('server-status', (_event, status) => callback(status))
   },
@@ -26,7 +25,6 @@ const api = {
   }
 }
 
-// Exponer en el Main World de forma segura si el aislamiento está activo
 if (process.contextIsolated) {
   try {
     contextBridge.exposeInMainWorld('api', api)
@@ -34,6 +32,6 @@ if (process.contextIsolated) {
     console.error('Error exponiendo la API segura:', error)
   }
 } else {
-  // @ts-ignore fallback para desarrollo antiguo
+  // @ts-ignore
   window.api = api
-} 
+}

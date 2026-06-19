@@ -9,9 +9,10 @@ import * as http from 'node:http'
 
 let mainWindow: BrowserWindow | null = null
 let currentFileMeta = { name: 'archivo.bin', size: 0 }
-
-// Archivo pendiente de envío al celular
 let pendingFile: { buffer: Buffer; name: string } | null = null
+
+// Alias configurable por el usuario desde la UI
+let deviceAlias = 'Mi PC'
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -26,9 +27,7 @@ function createWindow(): void {
       contextIsolation: true
     }
   })
-  mainWindow.on('ready-to-show', () => {
-    mainWindow?.show()
-  })
+  mainWindow.on('ready-to-show', () => mainWindow?.show())
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
     return { action: 'deny' }
@@ -45,7 +44,6 @@ function createWindow(): void {
   })
 }
 
-// Servidor UDP para Service Discovery (Puerto 53317)
 function initUDPServer(): void {
   const udpServer = dgram.createSocket('udp4')
   const UDP_PORT = 53317
@@ -59,11 +57,13 @@ function initUDPServer(): void {
   udpServer.on('message', (msg, rinfo) => {
     const rawMessage = msg.toString().trim()
     console.log(`[UDP] Llegó un paquete desde ${rinfo.address}: "${rawMessage}"`)
+
     const responseMessage = JSON.stringify({
       type: 'BEACON_RESPONSE',
-      alias: 'Cool Desktop Node',
+      alias: deviceAlias,  // ← usa el alias dinámico
       deviceType: 'desktop'
     })
+
     if (rawMessage === 'DISCOVER_LOCALSEND' || rawMessage.includes('DISCOVER')) {
       udpServer.send(responseMessage, rinfo.port, rinfo.address)
       mainWindow?.webContents.send('device-discovered', {
@@ -84,12 +84,12 @@ function initUDPServer(): void {
         udpServer.send(responseMessage, rinfo.port, rinfo.address)
       }
     } catch {
-      console.error('[UDP] No se pudo parsear como JSON, servidor sigue activo.')
+      console.error('[UDP] No se pudo parsear como JSON.')
     }
   })
 
   udpServer.on('error', (err) => {
-    console.error(`[UDP] Error en el socket: ${err.message}`)
+    console.error(`[UDP] Error: ${err.message}`)
     mainWindow?.webContents.send('server-status', false)
     udpServer.close()
   })
@@ -105,40 +105,37 @@ app.whenReady().then(() => {
 
   ipcMain.on('ping', () => console.log('pong'))
 
-  // ─── ENVÍO DE ARCHIVOS PC → CELULAR ───────────────────────────────────────
-  // El celular no puede recibir conexiones entrantes, así que guardamos el
-  // archivo en memoria y esperamos que el celular lo venga a buscar con GET /send
+  // Actualizar el alias cuando el usuario lo cambia desde la UI
+  ipcMain.on('set-alias', (_event, alias: string) => {
+    deviceAlias = alias || 'Mi PC'
+    console.log(`[ALIAS] Nombre actualizado a: "${deviceAlias}"`)
+  })
+
   ipcMain.on('send-file-to-device', (_event, data) => {
     const { fileBytes, fileName, targetIp } = data
-
     const fileBuffer = Buffer.from(fileBytes)
     const fileSize = fileBuffer.length
 
-    console.log(`[SEND] Archivo "${fileName}" (${fileSize} bytes) listo. Esperando que el celular lo busque...`)
-
-    // Guardar en memoria para que el celular lo descargue
+    console.log(`[SEND] Archivo "${fileName}" (${fileSize} bytes) listo.`)
     pendingFile = { buffer: fileBuffer, name: fileName }
 
-    // Mostrar progreso en 0% inmediatamente para dar feedback visual
     mainWindow?.webContents.send('transfer-progress', {
       percentage: 0, speed: '—', eta: 0, fileName
     })
 
-    // Notificar al celular vía UDP que hay un archivo disponible
     const udpNotify = dgram.createSocket('udp4')
     const msg = JSON.stringify({
       type: 'FILE_AVAILABLE',
-      alias: 'Cool Desktop Node',
+      alias: deviceAlias,
       fileName,
       fileSize
     })
     udpNotify.send(msg, 53317, targetIp, (err) => {
-      if (err) console.error('[UDP Notify] Error enviando notificación:', err.message)
+      if (err) console.error('[UDP Notify] Error:', err.message)
       else console.log(`[UDP Notify] Notificación enviada a ${targetIp}`)
       udpNotify.close()
     })
   })
-  // ──────────────────────────────────────────────────────────────────────────
 
   createWindow()
   app.on('activate', function () {
@@ -147,12 +144,9 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit()
-  }
+  if (process.platform !== 'darwin') app.quit()
 })
 
-// Servidor TCP para recibir archivos (Puerto 53318)
 function initTCPServer(): void {
   const TCP_PORT = 53318
   const tcpServer = net.createServer((socket) => {
@@ -171,7 +165,6 @@ function initTCPServer(): void {
       counter++
     }
     const writeStream = fs.createWriteStream(targetPath)
-
     const startTime = Date.now()
     let lastTime = startTime
     let lastBytes = 0
@@ -200,7 +193,7 @@ function initTCPServer(): void {
       }
     })
 
-    socket.on('end', () => { writeStream.end() })
+    socket.on('end', () => writeStream.end())
 
     writeStream.on('finish', () => {
       console.log(`[TCP] Archivo guardado en: ${targetPath}`)
@@ -219,11 +212,10 @@ function initTCPServer(): void {
   })
 
   tcpServer.listen(TCP_PORT, '0.0.0.0', () => {
-    console.log(`[TCP] Servidor de transferencia activo en puerto ${TCP_PORT}`)
+    console.log(`[TCP] Servidor activo en puerto ${TCP_PORT}`)
   })
 }
 
-// Servidor HTTP para recibir comandos de control (Metadatos y Pings)
 function initHTTPServer(): void {
   const HTTP_PORT = 53319
   const httpServer = http.createServer((req, res) => {
@@ -238,23 +230,28 @@ function initHTTPServer(): void {
     }
 
     // ── PING ──────────────────────────────────────────────────────────────
-    if (req.url === '/ping' && req.method === 'GET') {
-      res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ type: 'BEACON_RESPONSE', alias: 'Cool Desktop Node', deviceType: 'desktop' }))
-      try {
-        const remoteAddress = req.socket.remoteAddress || ''
-        const clientIp = remoteAddress.replace(/^.*:/, '') || '192.168.0.88'
-        mainWindow?.webContents.send('device-discovered', {
-          alias: 'Celular de Lucho',
-          ip: clientIp,
-          deviceType: 'mobile'
-        })
-      } catch (err) {
-        console.error('[HTTP] Error mandando IP al render:', err)
-      }
-    }
+if (req.url?.startsWith('/ping') && req.method === 'GET') {
+  res.writeHead(200, { 'Content-Type': 'application/json' })
+  res.end(JSON.stringify({ type: 'BEACON_RESPONSE', alias: deviceAlias, deviceType: 'desktop' }))
+  try {
+    const remoteAddress = req.socket.remoteAddress || ''
+    const clientIp = remoteAddress.replace(/^.*:/, '')
+    
+    // Leer el alias del query param
+    const urlParams = new URL(req.url, `http://localhost`).searchParams
+    const clientAlias = urlParams.get('alias') || 'Celular'
+    
+    mainWindow?.webContents.send('device-discovered', {
+      alias: clientAlias,  // ← usa el alias real del celular
+      ip: clientIp,
+      deviceType: 'mobile'
+    })
+  } catch (err) {
+    console.error('[HTTP] Error mandando IP al render:', err)
+  }
+}
 
-    // ── PENDING: el celular pregunta si hay un archivo esperándolo ─────────
+    // ── PENDING ───────────────────────────────────────────────────────────
     else if (req.url === '/pending' && req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify(
@@ -264,7 +261,7 @@ function initHTTPServer(): void {
       ))
     }
 
-    // ── SEND: el celular descarga el archivo pendiente ─────────────────────
+    // ── SEND ──────────────────────────────────────────────────────────────
     else if (req.url === '/send' && req.method === 'GET') {
       if (!pendingFile) {
         res.writeHead(404, { 'Content-Type': 'application/json' })
@@ -287,13 +284,11 @@ function initHTTPServer(): void {
       const sendChunk = (offset: number) => {
         if (offset >= buffer.length) {
           pendingFile = null
-          mainWindow?.webContents.send('transfer-progress', {
-            percentage: 100, speed: '0', eta: 0, fileName: name
-          })
+          mainWindow?.webContents.send('transfer-progress', { percentage: 100, speed: '0', eta: 0, fileName: name })
           mainWindow?.webContents.send('transfer-complete', '')
           new Notification({
             title: 'LocalSend - Envío Exitoso',
-            body: `"${name}" descargado por el celular correctamente.`
+            body: `"${name}" descargado por el celular.`
           }).show()
           res.end()
           return
@@ -301,20 +296,17 @@ function initHTTPServer(): void {
         const slice = buffer.subarray(offset, offset + CHUNK)
         sent += slice.length
         const percentage = Math.min(99, Math.round((sent / buffer.length) * 100))
-        mainWindow?.webContents.send('transfer-progress', {
-          percentage, speed: '—', eta: 0, fileName: name
-        })
+        mainWindow?.webContents.send('transfer-progress', { percentage, speed: '—', eta: 0, fileName: name })
         res.write(slice, () => sendChunk(offset + CHUNK))
       }
 
       sendChunk(0)
     }
 
-    // ── META: recepción de archivos desde el celular ───────────────────────
+    // ── META ──────────────────────────────────────────────────────────────
     else if (req.url === '/meta' && req.method === 'POST') {
       const contentType = req.headers['content-type'] || ''
 
-      // A. Metadatos JSON
       if (contentType.includes('application/json')) {
         let body = ''
         req.on('data', (chunk) => { body += chunk })
@@ -328,23 +320,17 @@ function initHTTPServer(): void {
                 size: data.files[firstFileKey].size || 0
               }
             } else {
-              currentFileMeta = {
-                name: data.name || 'archivo.bin',
-                size: data.size || 0
-              }
+              currentFileMeta = { name: data.name || 'archivo.bin', size: data.size || 0 }
             }
-            console.log(`[HTTP] Metadatos listos: ${currentFileMeta.name} (${currentFileMeta.size} bytes)`)
+            console.log(`[HTTP] Metadatos: ${currentFileMeta.name} (${currentFileMeta.size} bytes)`)
             res.writeHead(200, { 'Content-Type': 'application/json' })
-            res.end(JSON.stringify({ status: 'ACCEPTED', message: 'Metadatos guardados' }))
+            res.end(JSON.stringify({ status: 'ACCEPTED' }))
           } catch {
             res.writeHead(400)
             res.end(JSON.stringify({ error: 'Error parseando JSON' }))
           }
         })
-      }
-
-      // B. Stream de bytes (multipart)
-      else {
+      } else {
         const downloadFolder = app.getPath('downloads')
         let filename = currentFileMeta.name || 'archivo_recibido.bin'
         let targetPath = join(downloadFolder, filename)
@@ -382,9 +368,7 @@ function initHTTPServer(): void {
             if (boundaryStr) {
               const boundaryBuffer = Buffer.from('--' + boundaryStr)
               const lastBoundaryIndex = fullBuffer.lastIndexOf(boundaryBuffer)
-              if (lastBoundaryIndex > fileDataStart) {
-                fileDataEnd = lastBoundaryIndex - 2
-              }
+              if (lastBoundaryIndex > fileDataStart) fileDataEnd = lastBoundaryIndex - 2
             }
             writeStream.write(fullBuffer.subarray(fileDataStart, fileDataEnd))
           } else {
@@ -394,7 +378,7 @@ function initHTTPServer(): void {
         })
 
         writeStream.on('finish', () => {
-          console.log(`[HTTP] Archivo guardado al 100%.`)
+          console.log(`[HTTP] Archivo guardado.`)
           mainWindow?.webContents.send('transfer-complete', targetPath)
           new Notification({
             title: 'LocalSend - Recibido',
@@ -411,16 +395,13 @@ function initHTTPServer(): void {
           res.end()
         })
       }
-    }
-
-    // ── 404 ───────────────────────────────────────────────────────────────
-    else {
+    } else {
       res.writeHead(404)
       res.end()
     }
   })
 
   httpServer.listen(HTTP_PORT, '0.0.0.0', () => {
-    console.log(`[HTTP] Servidor de control unificado en puerto ${HTTP_PORT}`)
+    console.log(`[HTTP] Servidor unificado en puerto ${HTTP_PORT}`)
   })
 }
