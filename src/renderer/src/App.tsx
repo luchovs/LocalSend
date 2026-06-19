@@ -52,18 +52,23 @@ export default function App() {
       setNetworkError(null)
     })
 
-    electronAPI.onTransferError((errorMsg: string) => {
-      setProgress(null)
-      if (errorMsg === 'omitido') return
+electronAPI.onTransferError((errorMsg: string) => {
+  setProgress(null)
+  if (errorMsg === 'omitido') return
 
-      if (errorMsg.startsWith('recoverable:')) {
-        setNetworkError({ message: 'Se perdió la conexión. Podés reintentar el envío desde el celular.', recoverable: true })
-      } else if (errorMsg.startsWith('fatal:')) {
-        setNetworkError({ message: 'Error de transferencia. Verificá que ambos dispositivos estén en la misma red y volvé a intentarlo.', recoverable: false })
-      } else {
-        setNetworkError({ message: errorMsg, recoverable: false })
-      }
+  if (errorMsg === 'rechazado') {
+    setNetworkError({ 
+      message: 'El dispositivo de destino rechazó el archivo entrante.', 
+      recoverable: true 
     })
+  } else if (errorMsg.startsWith('recoverable:')) {
+    setNetworkError({ message: 'Se perdió la conexión. Podés reintentar el envío desde el celular.', recoverable: true })
+  } else if (errorMsg.startsWith('fatal:')) {
+    setNetworkError({ message: 'Error de transferencia. Verificá la red.', recoverable: false })
+  } else {
+    setNetworkError({ message: errorMsg, recoverable: false })
+  }
+})
   }, [])
 
   const saveAlias = () => {
@@ -96,7 +101,7 @@ export default function App() {
     <div style={styles.container}>
       <div style={styles.header}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <h1 style={styles.title}>LocalSend Desktop</h1>
+          <h1 style={styles.title}>LocalSend</h1>
           {editingAlias ? (
             <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
               <input

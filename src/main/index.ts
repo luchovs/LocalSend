@@ -30,7 +30,7 @@ function writeConfig(data: Record<string, any>): void {
 
 let mainWindow: BrowserWindow | null = null
 let currentFileMeta = { name: 'archivo.bin', size: 0 }
-let pendingFile: { buffer: Buffer; name: string } | null = null
+let pendingFile: { buffer: Buffer; name: string; targetIp: string } | null = null
 
 // Alias persistido: se carga del disco al arrancar
 let deviceAlias: string = readConfig().deviceAlias || 'Mi PC'
@@ -157,20 +157,27 @@ app.whenReady().then(() => {
     console.log(`[ALIAS] Guardado: "${deviceAlias}"`)
   })
 
-  ipcMain.on('send-file-to-device', (_event, data) => {
-    const { fileBytes, fileName, targetIp } = data
-    const fileBuffer = Buffer.from(fileBytes)
-    console.log(`[SEND] "${fileName}" (${fileBuffer.length} bytes) listo.`)
-    pendingFile = { buffer: fileBuffer, name: fileName }
-    mainWindow?.webContents.send('transfer-progress', { percentage: 0, speed: '—', eta: 0, fileName })
+ipcMain.on('send-file-to-device', (_event, data) => {
+  const { fileBytes, fileName, targetIp } = data
+  const fileBuffer = Buffer.from(fileBytes)
+  
+  // Limpiamos cualquier prefijo IPv6 raro si viniera formateado
+  const cleanTargetIp = targetIp.replace(/^.*:/, '')
+  
+  console.log(`[SEND] "${fileName}" listo exclusivamente para la IP: ${cleanTargetIp}`)
+  
+  // Guardamos la IP destino junto al buffer
+  pendingFile = { buffer: fileBuffer, name: fileName, targetIp: cleanTargetIp }
+  mainWindow?.webContents.send('transfer-progress', { percentage: 0, speed: '—', eta: 0, fileName })
 
-    const udpNotify = dgram.createSocket('udp4')
-    const msg = JSON.stringify({ type: 'FILE_AVAILABLE', alias: deviceAlias, fileName, fileSize: fileBuffer.length })
-    udpNotify.send(msg, 53317, targetIp, (err) => {
-      if (err) console.error('[UDP Notify] Error:', err.message)
-      udpNotify.close()
-    })
+  const udpNotify = dgram.createSocket('udp4')
+  const msg = JSON.stringify({ type: 'FILE_AVAILABLE', alias: deviceAlias, fileName, fileSize: fileBuffer.length })
+  
+  udpNotify.send(msg, 53317, cleanTargetIp, (err) => {
+    if (err) console.error('[UDP Notify] Error:', err.message)
+    udpNotify.close()
   })
+})
 
   createWindow()
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow() })
@@ -251,26 +258,51 @@ function initHTTPServer(): void {
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
     if (req.method === 'OPTIONS') { res.writeHead(200); res.end(); return }
 
-    // PING
+    // Obtenemos la IP limpia del cliente que hace la consulta HTTP
+    const clientIp = (req.socket.remoteAddress || '').replace(/^.*:/, '')
+
+    // PING (Mantenelo igual, solo usa clientIp que ya está limpia)
     if (req.url?.startsWith('/ping') && req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ type: 'BEACON_RESPONSE', alias: deviceAlias, deviceType: 'desktop' }))
       try {
-        const clientIp = (req.socket.remoteAddress || '').replace(/^.*:/, '')
         const clientAlias = new URL(req.url, 'http://localhost').searchParams.get('alias') || 'Celular'
         mainWindow?.webContents.send('device-discovered', { alias: clientAlias, ip: clientIp, deviceType: 'mobile' })
       } catch (err) { console.error('[HTTP] Error en ping:', err) }
     }
 
-    // PENDING
+    // PENDING (Modificado para validar IP)
     else if (req.url === '/pending' && req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify(pendingFile ? { fileName: pendingFile.name, fileSize: pendingFile.buffer.length } : {}))
+      
+      // SOLO devolvemos los datos del archivo si la IP que consulta coincide con la IP destino
+      if (pendingFile && pendingFile.targetIp === clientIp) {
+        res.end(JSON.stringify({ fileName: pendingFile.name, fileSize: pendingFile.buffer.length }))
+      } else {
+        res.end(JSON.stringify({}))
+      }
+    }
+
+// REJECT (Nuevo endpoint para cuando el celular rechaza el archivo)
+    else if (req.url === '/reject' && req.method === 'POST') {
+      if (pendingFile && pendingFile.targetIp === clientIp) {
+        console.log(`[HTTP] El celular (${clientIp}) rechazó el archivo: "${pendingFile.name}"`)
+        pendingFile = null // Destruimos el archivo en memoria
+        
+        // Avisamos a la UI de Electron que fue cancelado/rechazado
+        mainWindow?.webContents.send('transfer-error', 'rechazado')
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ status: 'OK' }))
     }
 
     // SEND
     else if (req.url === '/send' && req.method === 'GET') {
-      if (!pendingFile) { res.writeHead(404); res.end(JSON.stringify({ error: 'No hay archivo pendiente' })); return }
+      if (!pendingFile || pendingFile.targetIp !== clientIp) { 
+        res.writeHead(404)
+        res.end(JSON.stringify({ error: 'No hay archivos para este dispositivo' }))
+        return 
+      }
       const { buffer, name } = pendingFile
       res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Disposition': `attachment; filename="${name}"`, 'Content-Length': buffer.length })
       const CHUNK = 64 * 1024
