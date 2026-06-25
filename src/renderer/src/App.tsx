@@ -1,6 +1,6 @@
 import React from 'react'
-import { ControladorEscritorio } from './components/controladores/ControladorEscritorio'
+import { ControladorDeEnvio } from './components/controladores/ControladorDeEnvio'
 
 export default function App() {
-  return <ControladorEscritorio />
+  return <ControladorDeEnvio />
 }

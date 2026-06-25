@@ -13,6 +13,11 @@ export interface ProgressData {
   eta: number
 }
 
+interface NetworkError {
+  message: string
+  recoverable: boolean
+}
+
 const electronAPI = (window as any).api
 const DEFAULT_ALIAS = 'Mi PC'
 
@@ -24,7 +29,7 @@ export function useElectronSend() {
   const [alias, setAlias] = useState<string>(DEFAULT_ALIAS)
   const [editingAlias, setEditingAlias] = useState(false)
   const [aliasInput, setAliasInput] = useState(DEFAULT_ALIAS)
-  const [networkError, setNetworkError] = useState<{ message: string; recoverable: boolean } | null>(null)
+  const [networkError, setNetworkError] = useState<NetworkError | null>(null)
 
   useEffect(() => {
     if (!electronAPI) return
@@ -55,15 +60,17 @@ export function useElectronSend() {
       setProgress(null)
       if (errorMsg === 'omitido') return
 
-      if (errorMsg === 'rechazado') {
-        setNetworkError({ 
-          message: 'El dispositivo de destino rechazó el archivo entrante.', 
-          recoverable: true 
+      if (errorMsg.startsWith('recoverable:')) {
+        setNetworkError({
+          message: 'Se perdió la conexión. Podés reintentar el envío desde el celular.',
+          recoverable: true
         })
-      } else if (errorMsg.startsWith('recoverable:')) {
-        setNetworkError({ message: 'Se perdió la conexión. Podés reintentar el envío desde el celular.', recoverable: true })
       } else if (errorMsg.startsWith('fatal:')) {
-        setNetworkError({ message: 'Error de transferencia. Verificá la red.', recoverable: false })
+        setNetworkError({
+          message:
+            'Error de transferencia. Verificá que ambos dispositivos estén en la misma red y volvé a intentarlo.',
+          recoverable: false
+        })
       } else {
         setNetworkError({ message: errorMsg, recoverable: false })
       }
@@ -78,20 +85,20 @@ export function useElectronSend() {
     setEditingAlias(false)
   }
 
-  const handleDragOver = (e: React.DragEvent) => { 
+  const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault()
-    setIsDragging(true) 
+    setIsDragging(true)
   }
-  
+
   const handleDragLeave = () => setIsDragging(false)
 
   const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault()
     setIsDragging(false)
     setNetworkError(null)
-    if (!selectedDevice) { 
+    if (!selectedDevice) {
       alert('¡Primero seleccioná un dispositivo de la lista!')
-      return 
+      return
     }
     const files = e.dataTransfer.files
     if (files.length > 0) {
@@ -103,13 +110,6 @@ export function useElectronSend() {
     }
   }
 
-  const dismissError = () => setNetworkError(null)
-  const startEditingAlias = () => setEditingAlias(true)
-  const cancelEditingAlias = () => { 
-    setEditingAlias(false)
-    setAliasInput(alias) 
-  }
-
   return {
     devices,
     selectedDevice,
@@ -118,15 +118,14 @@ export function useElectronSend() {
     progress,
     alias,
     editingAlias,
+    setEditingAlias,
     aliasInput,
     setAliasInput,
     networkError,
+    setNetworkError,
     saveAlias,
     handleDragOver,
     handleDragLeave,
-    handleDrop,
-    dismissError,
-    startEditingAlias,
-    cancelEditingAlias
+    handleDrop
   }
 }
