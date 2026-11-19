@@ -10,12 +10,36 @@ export interface DiscoveredDevice { alias: string; ip: string; deviceType: strin
 export interface SelectedFile { name: string; size: number; uri: string; isImage: boolean; mimeType?: string }
 export interface IncomingFile { name: string; size: number; ip: string }
 
+// ── Helpers de subred ─────────────────────────────────────────────────────────
+
+const MAX_BLOCKS = 24 // bloques /24 a escanear: el propio + los 23 más cercanos
+
+// Devuelve los bloques /24 ("10.56.5.") a escanear. El propio va primero y después los
+// vecinos por cercanía (…4, …6, …3, …7), porque en redes escolares las PCs suelen estar
+// en otra subred ruteada que la del teléfono, así que la máscara sola no alcanza.
+function getScanBlocks(ip: string): string[] {
+  const [a, b, c] = ip.split('.').map(Number)
+  const prefix = `${a}.${b}.`
+  const blocks = [`${prefix}${c}.`]
+  for (let d = 1; blocks.length < MAX_BLOCKS && d <= 255; d++) {
+    if (c - d >= 0 && blocks.length < MAX_BLOCKS) blocks.push(`${prefix}${c - d}.`)
+    if (c + d <= 255 && blocks.length < MAX_BLOCKS) blocks.push(`${prefix}${c + d}.`)
+  }
+  return blocks
+}
+
+const SCAN_BATCH_SIZE = 60
+const PING_TIMEOUT_MS = 800
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 export function useLocalSend() {
   const [isWifi, setIsWifi] = useState<boolean | null>(null)
   const [wifiLost, setWifiLost] = useState(false)
   const [loading, setLoading] = useState(false)
   const [devices, setDevices] = useState<DiscoveredDevice[]>([])
-  const [baseIp, setBaseIp] = useState('')
+  const [localIp, setLocalIp] = useState('')
+  const [subnet, setSubnet] = useState('')
 
   const [selectedFile, setSelectedFile] = useState<SelectedFile | null>(null)
   const [sending, setSending] = useState(false)
@@ -43,10 +67,8 @@ export function useLocalSend() {
       setIsWifi(connected)
 
       if (connected && state.details && 'ipAddress' in state.details) {
-        const ip = state.details.ipAddress as string
-        const segments = ip.split('.')
-        segments.pop()
-        setBaseIp(segments.join('.') + '.')
+        setLocalIp(state.details.ipAddress as string)
+        setSubnet(('subnet' in state.details && (state.details.subnet as string)) || '')
       }
     })
     return () => unsubscribe()
@@ -75,23 +97,26 @@ export function useLocalSend() {
     return () => clearInterval(interval)
   }, [devices, receiving, incomingFile])
 
-  // 3. Escaneo
+  // 3. Escaneo (toda la subred del teléfono, en lotes)
   const scanNetwork = async () => {
-    if (!baseIp) return
+    if (!localIp) return
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium)
     setLoading(true)
     setDevices([])
-    const promises: Promise<void>[] = []
-    for (let i = 1; i <= 254; i++) {
-      promises.push(pingDevice(`${baseIp}${i}`))
+
+    const targets = getScanBlocks(localIp).flatMap((block) =>
+      Array.from({ length: 254 }, (_, i) => `${block}${i + 1}`)
+    )
+
+    for (let i = 0; i < targets.length; i += SCAN_BATCH_SIZE) {
+      await Promise.all(targets.slice(i, i + SCAN_BATCH_SIZE).map(pingDevice))
     }
-    await Promise.all(promises)
     setLoading(false)
   }
 
   const pingDevice = (targetIp: string): Promise<void> => {
     const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 600)
+    const timeoutId = setTimeout(() => controller.abort(), PING_TIMEOUT_MS)
     return fetch(`http://${targetIp}:53319/ping?alias=${encodeURIComponent(alias)}`, { method: 'GET', signal: controller.signal })
       .then(res => res.json())
       .then(data => {
@@ -104,6 +129,27 @@ export function useLocalSend() {
         }
       })
       .catch(() => clearTimeout(timeoutId))
+  }
+
+  // 3b. Conexión manual por IP (para redes con subredes ruteadas)
+  const connectToIp = async (rawIp: string): Promise<boolean> => {
+    const ip = rawIp.trim()
+    if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) return false
+    try {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 4000)
+      const res = await fetch(`http://${ip}:53319/ping?alias=${encodeURIComponent(alias)}`, { signal: controller.signal })
+      clearTimeout(timeoutId)
+      const data = await res.json()
+      if (data.type !== 'BEACON_RESPONSE') return false
+      setDevices(prev => {
+        if (prev.some(d => d.ip === ip)) return prev
+        return [...prev, { alias: data.alias, ip, deviceType: data.deviceType }]
+      })
+      return true
+    } catch (_) {
+      return false
+    }
   }
 
   // 4. Archivos
@@ -232,6 +278,7 @@ export function useLocalSend() {
     isWifi, wifiLost, loading, devices, alias, setAlias,
     selectedFile, setSelectedFile, sending, sendProgress,
     incomingFile, setIncomingFile, receiving, receiveProgress,
-    scanNetwork, pickDocument, pickFromGallery, sendFileToDevice, downloadFile
+    scanNetwork, connectToIp, localIp, subnet,
+    pickDocument, pickFromGallery, sendFileToDevice, downloadFile
   }
 }

@@ -12,12 +12,27 @@ export function ControladorDeTransferencia() {
   const {
     isWifi, wifiLost, loading, devices, alias, setAlias,
     selectedFile, sending, sendProgress, incomingFile, setIncomingFile,
-    receiving, receiveProgress, scanNetwork, pickDocument, pickFromGallery,
-    sendFileToDevice, downloadFile
+    receiving, receiveProgress, scanNetwork, connectToIp, localIp, subnet,
+    pickDocument, pickFromGallery, sendFileToDevice, downloadFile
   } = useLocalSend()
 
   const [showAliasModal, setShowAliasModal] = useState(false)
   const [aliasInput, setAliasInput] = useState(alias)
+  const [manualIp, setManualIp] = useState('')
+  const [connecting, setConnecting] = useState(false)
+
+  const handleConnectManual = async () => {
+    setConnecting(true)
+    const ok = await connectToIp(manualIp)
+    setConnecting(false)
+    if (ok) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success)
+      setManualIp('')
+    } else {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error)
+      Alert.alert('No se pudo conectar', `No hay una PC con LocalSend respondiendo en ${manualIp.trim() || '(IP vacía)'}.`)
+    }
+  }
 
   const saveAlias = () => {
     const trimmed = aliasInput.trim() || 'Mi Celular'
@@ -182,8 +197,32 @@ export function ControladorDeTransferencia() {
         </TouchableOpacity>
       )}
 
-      {/* Lista de Destinos */}
+      {/* Conexión manual por IP */}
       {!loading && (
+        <View style={{ marginTop: 10 }}>
+          <Text style={{ color: '#888', fontSize: 11, marginBottom: 6 }}>
+            Mi IP: {localIp || '—'}  ·  Máscara: {subnet || '—'}
+          </Text>
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <TextInput
+              style={[styles.modalInput, { flex: 1, marginBottom: 0, color: isDark ? '#fff' : '#111', borderColor: isDark ? '#3a3a45' : '#ddd', backgroundColor: isDark ? '#2a2a32' : '#f5f5f7' }]}
+              value={manualIp}
+              onChangeText={setManualIp}
+              placeholder="IP de la PC (ej: 10.56.2.38)"
+              placeholderTextColor="#888"
+              keyboardType="numbers-and-punctuation"
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+            <TouchableOpacity style={[styles.button, { marginVertical: 0, paddingHorizontal: 16, justifyContent: 'center' }, connecting && styles.buttonDisabled]} onPress={handleConnectManual} disabled={connecting || sending}>
+              <Text style={styles.buttonText}>{connecting ? '...' : 'Conectar'}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
+      {/* Lista de Destinos (visible mientras escanea si ya apareció algo) */}
+      {(!loading || devices.length > 0) && (
         <>
           <Text style={[styles.subtitle, { color: isDark ? '#a0a0b0' : '#666' }]}>Dispositivos encontrados:</Text>
           <FlatList
